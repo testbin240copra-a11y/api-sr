@@ -1,4 +1,4 @@
-# aiohttp_app.py - الخادم الرئيسي
+# aiohttp_app.py - الخادم الرئيسي (معدل لتجنب المشاكل وإظهار الأخطاء)
 
 import os
 import sys
@@ -12,15 +12,9 @@ from typing import Optional
 
 warnings.filterwarnings("ignore")
 
-# إخفاء جميع المخرجات
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
-
+# تم إيقاف كتم المخرجات لكي تتمكن من رؤية الأخطاء في السجلات (Logs)
 import logging
-logging.basicConfig(level=logging.CRITICAL)
-for name in logging.root.manager.loggerDict:
-    logging.getLogger(name).disabled = True
-    logging.getLogger(name).handlers = []
+logging.basicConfig(level=logging.INFO)
 
 from aiohttp import web, ClientTimeout
 from aiohttp_cors import CorsViewMixin, setup as setup_cors
@@ -36,7 +30,6 @@ except ImportError:
     MEMORY_CHECK_ENABLED = False
 
 MEMORY_LIMIT_PERCENT = 90
-
 PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "6667")))
 
 _stats = {
@@ -72,10 +65,8 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
         pass
 
 class VeNoMHandler(web.View):
-    
     async def get(self):
         return await self._handle()
-    
     async def post(self):
         return await self._handle()
     
@@ -83,12 +74,10 @@ class VeNoMHandler(web.View):
         if is_memory_exceeded():
             return web.json_response({"error": "Server is busy"}, status=503)
         
-        # استخراج المعاملات
         cc = self.request.query.get("cc")
         site = self.request.query.get("site")
         proxy = self.request.query.get("proxy", "")
         
-        # إذا كان POST، حاول قراءة JSON
         if self.request.method == "POST":
             try:
                 body = await self.request.json()
@@ -108,7 +97,6 @@ class VeNoMHandler(web.View):
             _stats["total"] += 1
         
         t0 = time.time()
-        
         try:
             result = await checker.check_card(cc, site, proxy or "")
         except Exception as e:
@@ -127,8 +115,8 @@ class VeNoMHandler(web.View):
         
         elapsed = round(time.time() - t0, 2)
         status = result.get("status", "error")
-        
         status_map = {"charged": "charged", "approved": "approved", "declined": "declined"}
+        
         async with _stats_lock:
             _stats[status_map.get(status, "errors")] += 1
             _stats["active"] -= 1
@@ -148,22 +136,17 @@ class VeNoMHandler(web.View):
             "elapsed": elapsed,
         })
 
-
 class StatusHandler(web.View):
     async def get(self):
         async with _stats_lock:
             stats_copy = _stats.copy()
         return await get_status_page(stats_copy)
 
-
 async def health_check(request):
     return web.json_response({"ok": True})
 
-
 def create_app():
     app = web.Application()
-    
-    # إعداد CORS
     cors = setup_cors(app, defaults={
         "*": {
             "allow_credentials": True,
@@ -172,17 +155,13 @@ def create_app():
         }
     })
     
-    # تسجيل المسارات
     app.router.add_view("/VeNoM-xK9qPm2r", VeNoMHandler)
     app.router.add_view("/VeNoM-status", StatusHandler)
     app.router.add_get("/health", health_check)
     
-    # تطبيق CORS على جميع المسارات
     for route in list(app.router.routes()):
         cors.add(route)
-    
     return app
-
 
 if __name__ == "__main__":
     import uvloop
@@ -193,6 +172,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=PORT,
-        access_log=None,
-        access_log_format=None,
     )
