@@ -1,3 +1,5 @@
+# checker_api2.py
+
 from __future__ import annotations
 
 import asyncio
@@ -30,12 +32,8 @@ except ImportError:
     MEMORY_CHECK_ENABLED = False
 
 MEMORY_LIMIT_PERCENT = 90
-# حد أقصى لكل طلب فحص بطاقة (ثانية)
-REQUEST_TIMEOUT = 90
-
 PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "6767")))
 
-# ── Stats (no lock needed — int ops are GIL-safe enough for counters) ──
 _stats = {
     "active":   0,
     "total":    0,
@@ -43,53 +41,44 @@ _stats = {
     "approved": 0,
     "declined": 0,
     "errors":   0,
-    "by":       "3ltz",
+    "by":       "VeNoM",
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
 }
 
-# ── Memory guard — cached لـ 5 ثواني لتجنب استدعاء psutil مع كل request ──
-_mem_cache: dict = {"val": False, "ts": 0.0}
+_stats_lock = asyncio.Lock()
 
 def is_memory_exceeded() -> bool:
     if not MEMORY_CHECK_ENABLED or psutil is None:
         return False
-    now = time.time()
-    if now - _mem_cache["ts"] < 5.0:
-        return _mem_cache["val"]
     try:
-        val = psutil.virtual_memory().percent >= MEMORY_LIMIT_PERCENT
+        mem = psutil.virtual_memory()
+        return mem.percent >= MEMORY_LIMIT_PERCENT
     except Exception:
-        val = False
-    _mem_cache["val"] = val
-    _mem_cache["ts"]  = now
-    return val
+        return False
 
-
-# ── Async dump — لا يوقف event loop ──
-async def _save_dump(card: str, site: str, status: str, result: str, amount: str):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount}\n"
-    def _write():
-        try:
-            with open("dump.txt", "a", encoding="utf-8") as f:
-                f.write(line)
-                f.flush()
-        except Exception:
-            pass
-    await asyncio.to_thread(_write)
-
+def _save_dump(card: str, site: str, status: str, result: str, amount: str):
+    try:
+        with open("dump.txt", "a", encoding="utf-8") as f:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount}\n"
+            f.write(line)
+            f.flush()
+    except Exception:
+        pass
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     yield
 
-app = FastAPI(title="3ltz", docs_url=None, redoc_url=None, lifespan=_lifespan)
+app = FastAPI(title="VeNoM", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
-@app.get("/3ltz-status")
+@app.get("/VeNoM-status")
 async def status():
-    return JSONResponse({"ok": True, "api": "3ltz", **_stats})
+    async with _stats_lock:
+        stats_copy = _stats.copy()
+    return JSONResponse({"ok": True, "api": "VeNoM", **stats_copy})
 
-@app.api_route("/3ltz-xK9qPm2r", methods=["GET", "POST"])
+@app.api_route("/VeNoM-xK9qPm2r", methods=["GET", "POST"])
 async def check(
     request: Request,
     cc:    Optional[str] = Query(None),
@@ -113,74 +102,52 @@ async def check(
     if not site:
         return JSONResponse({"error": "Missing site"}, status_code=400)
 
-    _stats["active"] += 1
-    _stats["total"]  += 1
+    async with _stats_lock:
+        _stats["active"] += 1
+        _stats["total"]  += 1
 
-    t0 = time.monotonic()
+    t0 = time.time()
 
     try:
-        result = await asyncio.wait_for(
-            checker_async.check_card_async(cc, site, proxy or ""),
-            timeout=REQUEST_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        _stats["errors"] += 1
-        _stats["active"] -= 1
-        return JSONResponse({
-            "Status":   "SiteError",
-            "Response": "Timeout",
-            "Price":    "-",
-            "Gateway":  "3ltz",
-            "Card":     cc,
-            "site":     site,
-            "elapsed":  round(time.monotonic() - t0, 2),
-        })
+        result = await checker_async.check_card_async(cc, site, proxy or "")
     except Exception as e:
-        _stats["errors"] += 1
-        _stats["active"] -= 1
+        async with _stats_lock:
+            _stats["errors"] += 1
+            _stats["active"] -= 1
         return JSONResponse({
             "Status":   "SiteError",
             "Response": str(e)[:150],
             "Price":    "-",
-            "Gateway":  "3ltz",
+            "Gateway":  "VeNoM",
             "Card":     cc,
             "site":     site,
-            "elapsed":  round(time.monotonic() - t0, 2),
+            "elapsed":  round(time.time() - t0, 2),
         })
 
-    elapsed     = round(time.monotonic() - t0, 2)
-    card_status = result.get("status", "error")
+    elapsed = round(time.time() - t0, 2)
+    status  = result.get("status", "error")
 
-    _stats[{"charged": "charged", "approved": "approved",
-            "declined": "declined"}.get(card_status, "errors")] += 1
-    _stats["active"] -= 1
+    status_map = {"charged": "charged", "approved": "approved", "declined": "declined"}
+    async with _stats_lock:
+        _stats[status_map.get(status, "errors")] += 1
+        _stats["active"] -= 1
 
-    if card_status in ("charged", "approved"):
-        await _save_dump(cc, site, card_status, result.get("result", ""), result.get("amount", "0"))
+    if status in ("charged", "approved", "declined"):
+        _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"))
 
-    bot_status = {"charged": "Charged", "approved": "Approved",
-                  "declined": "Declined"}.get(card_status, "SiteError")
+    bot_status = {"charged": "Charged", "approved": "Approved", "declined": "Declined"}.get(status, "SiteError")
 
     return JSONResponse({
         "Status":   bot_status,
         "Response": result.get("result", ""),
         "Price":    result.get("amount", "-"),
-        "Gateway":  "3ltz",
+        "Gateway":  "VeNoM",
         "Card":     cc,
         "site":     site,
         "elapsed":  elapsed,
     })
 
 if __name__ == "__main__":
-    print("━" * 50)
-    print("  3ltz Checker API — TURBO MODE")
-    print(f"  Port      : {PORT}")
-    print(f"  Endpoint  : /3ltz-xK9qPm2r")
-    print(f"  Status    : /3ltz-status")
-    print(f"  Timeout   : {REQUEST_TIMEOUT}s per check")
-    print(f"  Mem limit : {MEMORY_LIMIT_PERCENT}%")
-    print("━" * 50)
-
     uvicorn.run(
         "checker_api2:app",
         host="0.0.0.0",
