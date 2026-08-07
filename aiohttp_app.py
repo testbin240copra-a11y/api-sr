@@ -1,36 +1,21 @@
-# aiohttp_app.py - الخادم الرئيسي (مصحح)
+# aiohttp_app.py
 
 import os
 import sys
 import time
-import json
 import asyncio
+import json
 import datetime
-import warnings
-from pathlib import Path
-from typing import Optional
+from aiohttp import web
+from aiohttp_cors import setup as setup_cors
 
-warnings.filterwarnings("ignore")
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
 
 import logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.CRITICAL)
 
-from aiohttp import web, ClientTimeout
-import aiohttp_cors
-from aiohttp_cors import CorsViewMixin, setup as setup_cors
-
-import checker_async_aiohttp as checker
 from status_page import get_status_page
-
-try:
-    import psutil
-    MEMORY_CHECK_ENABLED = True
-except ImportError:
-    psutil = None
-    MEMORY_CHECK_ENABLED = False
-
-MEMORY_LIMIT_PERCENT = 90
-PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "8080")))
 
 _stats = {
     "active": 0,
@@ -45,15 +30,6 @@ _stats = {
 
 _stats_lock = asyncio.Lock()
 
-def is_memory_exceeded() -> bool:
-    if not MEMORY_CHECK_ENABLED or psutil is None:
-        return False
-    try:
-        mem = psutil.virtual_memory()
-        return mem.percent >= MEMORY_LIMIT_PERCENT
-    except Exception:
-        return False
-
 def _save_dump(card: str, site: str, status: str, result: str, amount: str):
     try:
         with open("dump.txt", "a", encoding="utf-8") as f:
@@ -64,17 +40,14 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
     except Exception:
         pass
 
-# إضافة CorsViewMixin هنا لتجنب خطأ الـ ValueError
-class VeNoMHandler(web.View, CorsViewMixin):
+class VeNoMHandler(web.View):
     async def get(self):
         return await self._handle()
+    
     async def post(self):
         return await self._handle()
     
     async def _handle(self):
-        if is_memory_exceeded():
-            return web.json_response({"error": "Server is busy"}, status=503)
-        
         cc = self.request.query.get("cc")
         site = self.request.query.get("site")
         proxy = self.request.query.get("proxy", "")
@@ -98,8 +71,10 @@ class VeNoMHandler(web.View, CorsViewMixin):
             _stats["total"] += 1
         
         t0 = time.time()
+        
         try:
-            result = await checker.check_card(cc, site, proxy or "")
+            from checker_aiohttp import check_card
+            result = await check_card(cc, site, proxy or "")
         except Exception as e:
             async with _stats_lock:
                 _stats["errors"] += 1
@@ -116,8 +91,8 @@ class VeNoMHandler(web.View, CorsViewMixin):
         
         elapsed = round(time.time() - t0, 2)
         status = result.get("status", "error")
-        status_map = {"charged": "charged", "approved": "approved", "declined": "declined"}
         
+        status_map = {"charged": "charged", "approved": "approved", "declined": "declined"}
         async with _stats_lock:
             _stats[status_map.get(status, "errors")] += 1
             _stats["active"] -= 1
@@ -137,7 +112,7 @@ class VeNoMHandler(web.View, CorsViewMixin):
             "elapsed": elapsed,
         })
 
-class StatusHandler(web.View, CorsViewMixin):
+class StatusHandler(web.View):
     async def get(self):
         async with _stats_lock:
             stats_copy = _stats.copy()
@@ -149,30 +124,20 @@ async def health_check(request):
 def create_app():
     app = web.Application()
     
-    cors = aiohttp_cors.setup(app, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=True,
-            allow_methods="*",
-            allow_headers="*",
-        )
+    cors = setup_cors(app, defaults={
+        "*": {
+            "allow_credentials": True,
+            "allow_methods": "*",
+            "allow_headers": "*",
+        }
     })
     
     app.router.add_view("/VeNoM-xK9qPm2r", VeNoMHandler)
     app.router.add_view("/VeNoM-status", StatusHandler)
     app.router.add_get("/health", health_check)
+    app.router.add_get("/VeNoM-status", StatusHandler)
     
     for route in list(app.router.routes()):
         cors.add(route)
-    return app
-
-if __name__ == "__main__":
-    import uvloop
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     
-    app = create_app()
-    web.run_app(
-        app,
-        host="0.0.0.0",
-        port=PORT,
-        access_log=None,
-    )
+    return app
