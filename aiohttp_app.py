@@ -145,22 +145,29 @@ class StatusHandler(web.View):
 async def health_check(request):
     return web.json_response({"ok": True})
 
+import aiohttp_cors
+
 def create_app():
     app = web.Application()
-    cors = setup_cors(app, defaults={
-        "*": {
-            "allow_credentials": True,
-            "allow_methods": "*",
-            "allow_headers": "*",
-        }
+    
+    # إعداد CORS بالطريقة الصحيحة لمتطلبات المكتبة
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            allow_methods="*",
+            allow_headers="*",
+        )
     })
     
+    # تسجيل المسارات
     app.router.add_view("/VeNoM-xK9qPm2r", VeNoMHandler)
     app.router.add_view("/VeNoM-status", StatusHandler)
     app.router.add_get("/health", health_check)
     
+    # تطبيق CORS على جميع المسارات
     for route in list(app.router.routes()):
         cors.add(route)
+    
     return app
 
 if __name__ == "__main__":
