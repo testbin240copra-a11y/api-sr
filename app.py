@@ -1,10 +1,9 @@
-# app.py - المدخل الرئيسي
+# app.py
 
 import sys
 import os
 from pathlib import Path
 
-# نضيف مسار المجلد الحالي للنظام لضمان العثور على الملفات
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 if __name__ == "__main__":
@@ -15,9 +14,6 @@ if __name__ == "__main__":
     import aiohttp_app
     
     port = int(os.environ.get("PORT", 6667))
-    print(f"Starting VeNoM Checker API on port {port}...")
-    print(f"Endpoint: /VeNoM-xK9qPm2r")
-    print(f"Status  : /VeNoM-status")
     
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     app = aiohttp_app.create_app()
