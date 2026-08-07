@@ -1,3 +1,5 @@
+# auto_async.py
+
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +8,7 @@ import re
 import html
 import random
 import urllib.parse
+import time
 
 from curl_cffi.requests import AsyncSession
 
@@ -63,22 +66,6 @@ check_submit_errors = _auto.check_submit_errors
 generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
-_PRODUCT_TIERS = [
-    (25, 20.0),
-]
-
-def _tier_max_for_page(page):
-    for max_page, price_limit in _PRODUCT_TIERS:
-        if page <= max_page:
-            return price_limit
-    return _PRODUCT_TIERS[-1][1]
-
-def _next_tier_start(page):
-    for max_page, _ in _PRODUCT_TIERS:
-        if page <= max_page:
-            return max_page + 1
-    return 999
-
 class AsyncTLSClient:
     def __init__(self, timeout=8, proxy_url=None, impersonate=None, user_agent=None):
         self.timeout = timeout
@@ -131,78 +118,69 @@ class AsyncTLSClient:
             self._session = None
 
 async def find_cheapest_product(client, shop_url, min_price=0.50):
-    fallback_best = None
+    best_price = float('inf')
+    product_title = ""
+    product_id = ""
+    product_handle = ""
+    variant_id = ""
+    price_str = ""
+    
     page = 1
-    max_pages = 25
-    batch_size = 3
-
+    max_pages = 50
+    
     while page <= max_pages:
-        end_page = min(page + batch_size - 1, max_pages)
-        tasks = []
-        for p in range(page, end_page + 1):
-            url = f"{shop_url}/products.json?limit=250&sort_by=price-ascending&page={p}"
-            tasks.append(client.get(url))
-
+        url = f"{shop_url}/products.json?limit=250&page={page}&sort_by=price-ascending"
+        
         try:
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            resp = await client.get(url)
         except Exception as e:
-            raise Exception(f"Batch gather failed: {e}")
-
-        for idx, resp in enumerate(responses):
-            current_page = page + idx
-            if isinstance(resp, Exception):
-                if "404" in str(resp):
+            page += 1
+            continue
+            
+        if resp.status_code == 429:
+            raise Exception("GET products.json returned 429")
+        if resp.status_code != 200:
+            page += 1
+            continue
+            
+        try:
+            data = resp.json()
+            products = data.get("products", [])
+        except:
+            page += 1
+            continue
+            
+        if not products:
+            break
+            
+        for p in products:
+            for v in p.get("variants", []):
+                if not v.get("available", False):
                     continue
-                raise Exception(f"Page {current_page} error: {resp}")
-
-            if resp.status_code == 429:
-                raise Exception("GET products.json returned 429")
-            if resp.status_code == 503:
-                raise Exception("GET products.json returned 503")
-            if resp.status_code != 200:
-                if resp.status_code == 404:
+                try:
+                    price = float(v.get("price") or 0)
+                except (ValueError, TypeError):
                     continue
-                raise Exception(f"GET products.json returned {resp.status_code}")
-
-            try:
-                products = resp.json().get("products", [])
-            except Exception:
-                raise Exception("GET products.json invalid JSON")
-
-            if not products:
-                continue
-
-            for p in products:
-                for v in p.get("variants", []):
-                    if not v.get("available", False):
-                        continue
-                    try:
-                        price = float(v.get("price") or 0)
-                    except (ValueError, TypeError):
-                        continue
-                    if price < min_price:
-                        continue
-
-                    entry = (
-                        p.get("title", ""),
-                        str(p.get("id", "")),
-                        p.get("handle", ""),
-                        str(v.get("id", "")),
-                        v.get("price", ""),
-                    )
-
-                    if fallback_best is None or price < float(fallback_best[4]):
-                        fallback_best = entry
-
-                    if price <= 20.0:
-                        return entry
-
-        page = end_page + 1
-
-    if fallback_best is not None:
-        return fallback_best
-
-    raise Exception(f"No available products at {shop_url}")
+                if price < min_price:
+                    continue
+                if price < best_price:
+                    best_price = price
+                    product_title = p.get("title", "")
+                    product_id = str(p.get("id", ""))
+                    product_handle = p.get("handle", "")
+                    variant_id = str(v.get("id", ""))
+                    price_str = v.get("price", "")
+                    
+                    # لو لقينا منتج بسعر 0.5-2$ نرجع علطول
+                    if price <= 2.0:
+                        return product_title, product_id, product_handle, variant_id, price_str
+                    
+        page += 1
+        
+    if not product_title:
+        raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+        
+    return product_title, product_id, product_handle, variant_id, price_str
 
 _PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -832,7 +810,7 @@ async def run_checkout_for_card_async(shop_url, card_entry, proxy_url=""):
     impersonate = random.choice(["chrome124", "chrome120", "chrome116", "edge101", "safari15_5"])
     user_agent = random.choice(USER_AGENTS)
 
-    client = AsyncTLSClient(timeout=8, proxy_url=proxy_url, impersonate=impersonate, user_agent=user_agent)
+    client = AsyncTLSClient(timeout=12, proxy_url=proxy_url, impersonate=impersonate, user_agent=user_agent)
     try:
         try:
             title, product_id, product_handle, variant_id, price = await find_cheapest_product(client, shop_url)
@@ -851,7 +829,7 @@ async def run_checkout_for_card_async(shop_url, card_entry, proxy_url=""):
                 raise Exception("missing stableId, buildId, or sourceToken")
         except Exception as e:
             result.status = CheckStatus.ERROR
-            result.retryable = "CF_MANAGED_CHALLENGE" not in str(e)
+            result.retryable = True
             result.error = Exception(f"Step 1 failed: {e}")
             return result
 
@@ -1075,11 +1053,6 @@ async def run_checkout_for_card_async(shop_url, card_entry, proxy_url=""):
                         result.status = CheckStatus.DECLINED
                         result.status_code = "CARD_DECLINED"
                         result.error = Exception("CARD_DECLINED")
-                    elif error_code == "01003":
-                        result.status = CheckStatus.DECLINED
-                        result.status_code = "CARD_DECLINED"
-                        result.error = Exception("CARD_DECLINED")
-                        result.retryable = True
                     else:
                         if "InventoryReservationFailure" in poll_body:
                             result.status = CheckStatus.ERROR
