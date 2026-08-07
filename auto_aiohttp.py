@@ -311,7 +311,11 @@ def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
 
 # ──────────────────────── Find product ─────────────────────────────────
 
-async def find_cheapest_product(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
+async def find_cheapest_product(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
+    """
+    تجيب أرخص منتج في الموقع بسعر بين min_price و max_price
+    بتجيب 250 منتج في الصفحة وبتدور في 50 صفحة
+    """
     now = time.time()
     
     async with _site_429_cache_lock:
@@ -322,7 +326,7 @@ async def find_cheapest_product(client: AioHTTPClient, shop_url: str, min_price:
                     for alt_site in fallback_sites[:5]:
                         if alt_site != shop_url:
                             try:
-                                return await find_cheapest_product(client, alt_site, min_price, None)
+                                return await find_cheapest_product(client, alt_site, min_price, max_price, None)
                             except:
                                 continue
                 raise Exception(f"Site blocked (429) - no working fallback")
@@ -335,7 +339,7 @@ async def find_cheapest_product(client: AioHTTPClient, shop_url: str, min_price:
             return cached[:-1]
     
     try:
-        result = await _find_product_from_sources(client, shop_url, min_price)
+        result = await _find_product_from_sources(client, shop_url, min_price, max_price)
         if result:
             async with _product_cache_lock:
                 _product_cache[shop_url] = (*result, now)
@@ -349,17 +353,17 @@ async def find_cheapest_product(client: AioHTTPClient, shop_url: str, min_price:
                 for alt_site in fallback_sites[:5]:
                     if alt_site != shop_url:
                         try:
-                            return await find_cheapest_product(client, alt_site, min_price, None)
+                            return await find_cheapest_product(client, alt_site, min_price, max_price, None)
                         except:
                             continue
             raise Exception(f"Site returned 429 - no working fallback")
         raise e
     
-    raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+    raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
 
-async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_price: float = 0.50):
+async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0):
     try:
-        result = await _find_product_from_collections(client, shop_url, min_price)
+        result = await _find_product_from_collections(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -367,7 +371,7 @@ async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_p
             raise e
     
     try:
-        result = await _find_product_from_search(client, shop_url, min_price)
+        result = await _find_product_from_search(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -375,7 +379,7 @@ async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_p
             raise e
     
     try:
-        result = await _find_product_from_homepage(client, shop_url, min_price)
+        result = await _find_product_from_homepage(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -383,7 +387,7 @@ async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_p
             raise e
     
     try:
-        result = await _find_product_from_products_json(client, shop_url, min_price)
+        result = await _find_product_from_products_json(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -393,7 +397,7 @@ async def _find_product_from_sources(client: AioHTTPClient, shop_url: str, min_p
     
     return None
 
-async def _find_product_from_homepage(client: AioHTTPClient, shop_url: str, min_price: float = 0.50):
+async def _find_product_from_homepage(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0):
     try:
         resp = await client.get(shop_url)
         if resp.status == 429:
@@ -428,7 +432,7 @@ async def _find_product_from_homepage(client: AioHTTPClient, shop_url: str, min_
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -445,7 +449,8 @@ async def _find_product_from_homepage(client: AioHTTPClient, shop_url: str, min_
                 data = json.loads(json_match.group(1))
                 products = _extract_products_from_json(data)
                 for title, product_id, variant_id, price in products:
-                    if float(price) >= min_price:
+                    price_float = float(price)
+                    if min_price <= price_float <= max_price:
                         return title, product_id, variant_id, price
             except:
                 pass
@@ -454,7 +459,7 @@ async def _find_product_from_homepage(client: AioHTTPClient, shop_url: str, min_
     except:
         return None
 
-async def _find_product_from_collections(client: AioHTTPClient, shop_url: str, min_price: float = 0.50):
+async def _find_product_from_collections(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0):
     try:
         resp = await client.get(f"{shop_url}/collections/all")
         if resp.status == 429:
@@ -489,7 +494,7 @@ async def _find_product_from_collections(client: AioHTTPClient, shop_url: str, m
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -508,7 +513,7 @@ async def _find_product_from_collections(client: AioHTTPClient, shop_url: str, m
                     for v in p.get('variants', []):
                         if v.get('available', False):
                             price = float(v.get('price', 0))
-                            if price >= min_price:
+                            if min_price <= price <= max_price:
                                 return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
         except:
             pass
@@ -517,7 +522,7 @@ async def _find_product_from_collections(client: AioHTTPClient, shop_url: str, m
     except:
         return None
 
-async def _find_product_from_search(client: AioHTTPClient, shop_url: str, min_price: float = 0.50):
+async def _find_product_from_search(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0):
     try:
         resp = await client.get(f"{shop_url}/search?q=*&view=json")
         if resp.status == 429:
@@ -531,7 +536,7 @@ async def _find_product_from_search(client: AioHTTPClient, shop_url: str, min_pr
                         for v in p.get('variants', []):
                             if v.get('available', False):
                                 price = float(v.get('price', 0))
-                                if price >= min_price:
+                                if min_price <= price <= max_price:
                                     return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
             except:
                 pass
@@ -568,7 +573,7 @@ async def _find_product_from_search(client: AioHTTPClient, shop_url: str, min_pr
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -583,7 +588,12 @@ async def _find_product_from_search(client: AioHTTPClient, shop_url: str, min_pr
     except:
         return None
 
-async def _find_product_from_products_json(client: AioHTTPClient, shop_url: str, min_price: float = 0.50):
+async def _find_product_from_products_json(client: AioHTTPClient, shop_url: str, min_price: float = 0.50, max_price: float = 30.0):
+    """
+    تجيب أرخص منتج من /products.json
+    بتجيب 250 منتج في الصفحة وبتدور في 50 صفحة
+    بترجع أول منتج سعره بين min_price و max_price
+    """
     async with _site_429_cache_lock:
         if shop_url in _site_429_cache:
             if time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
@@ -595,45 +605,77 @@ async def _find_product_from_products_json(client: AioHTTPClient, shop_url: str,
     variant_id = ""
     price_str = ""
     
-    resp = await client.get(f"{shop_url}/products.json?limit=5&page=1")
+    # نجيب 250 منتج في الصفحة عشان نقلل عدد الطلبات
+    limit = 250
+    max_pages = 50
+    batch_size = 3  # عدد الصفحات اللي بنجيبها مع بعض
     
-    if resp.status == 429:
-        async with _site_429_cache_lock:
-            _site_429_cache[shop_url] = time.time()
-        raise Exception("GET products.json returned 429")
-    
-    if resp.status != 200:
-        raise Exception(f"GET products.json returned {resp.status}")
-    
-    try:
-        products = (await resp.json()).get("products", [])
-    except:
-        raise Exception("products.json returned non-json")
-    
-    if not products:
-        raise Exception(f"No products found at {shop_url}")
-    
-    for p in products:
-        for v in p.get("variants", []):
-            if not v.get("available", False):
-                continue
+    page = 1
+    while page <= max_pages:
+        end_page = min(page + batch_size - 1, max_pages)
+        tasks = []
+        for p in range(page, end_page + 1):
+            url = f"{shop_url}/products.json?limit={limit}&page={p}"
+            tasks.append(client.get(url))
+        
+        try:
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            raise Exception(f"Batch gather failed: {e}")
+        
+        for idx, resp in enumerate(responses):
+            current_page = page + idx
+            if isinstance(resp, Exception):
+                if "404" in str(resp):
+                    continue
+                raise Exception(f"Page {current_page} error: {resp}")
+            
+            if hasattr(resp, 'status') and resp.status == 429:
+                async with _site_429_cache_lock:
+                    _site_429_cache[shop_url] = time.time()
+                raise Exception("GET products.json returned 429")
+            
+            if hasattr(resp, 'status') and resp.status == 503:
+                raise Exception("GET products.json returned 503")
+            
+            if not hasattr(resp, 'status') or resp.status != 200:
+                if hasattr(resp, 'status') and resp.status == 404:
+                    continue
+                raise Exception(f"GET products.json returned {getattr(resp, 'status', 'unknown')}")
+            
             try:
-                price = float(v.get("price") or 0)
-            except (ValueError, TypeError):
+                data = await resp.json()
+                products = data.get("products", [])
+            except:
+                raise Exception("GET products.json invalid JSON")
+            
+            if not products:
                 continue
-            if price < min_price:
-                continue
-            if price < best_price:
-                best_price = price
-                product_title = p.get("title", "")
-                product_id = str(p.get("id", ""))
-                variant_id = str(v.get("id", ""))
-                price_str = v.get("price", "")
+            
+            for p in products:
+                for v in p.get("variants", []):
+                    if not v.get("available", False):
+                        continue
+                    try:
+                        price = float(v.get("price") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # نتأكد إن السعر بين min_price و max_price
+                    if price < min_price or price > max_price:
+                        continue
+                    
+                    # أول منتج بالسعر المناسب نرجعها علطول
+                    return (
+                        p.get("title", ""),
+                        str(p.get("id", "")),
+                        str(v.get("id", "")),
+                        v.get("price", "")
+                    )
+        
+        page = end_page + 1
     
-    if not product_title:
-        raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
-    
-    return product_title, product_id, variant_id, price_str
+    raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
 
 # ──────────────────────── Step 1: cart → checkout ────────────────────
 
