@@ -1,0 +1,11 @@
+[build]
+builder = "python"
+
+[build.env]
+PYTHON_VERSION = "3.10"
+
+[build.cmd]
+install = "pip install -r requirements.txt"
+
+[start]
+cmd = "python app.py"
