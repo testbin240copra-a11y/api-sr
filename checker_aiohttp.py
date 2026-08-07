@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # استدعاء auto.py الأصلي (اللي شغال مع curl_cffi)
 import auto
-from auto import CheckStatus, CheckResult
+from auto import CheckStatus
 
 from config import SITE_FILE, SITE_LOW_FILE, SITE_MID_FILE
 
@@ -104,7 +104,7 @@ def normalize_proxy(proxy):
 _APPROVED_KEYWORDS = (
     "3DS_AUTHENTICATION", "3DS_AUTH", "3DS",
     "AUTHENTICATION_REQUIRED", "ACTIONREQUIRED",
-    "INSUFFICIENT_FUNDS", "INSUFFICIENT FUNDS",
+    "INSUFFICIENT_FUNDS",
 )
 _DECLINED_KEYWORDS = (
     "CARD_DECLINED", "DECLINED", "DO_NOT_HONOR", "GENERIC_ERROR",
