@@ -1,56 +1,44 @@
-# checker_aiohttp.py - نسخة تعمل مع aiohttp
+# checker_aiohttp.py
 
 import random
 import time
 import asyncio
-import urllib.parse
-from pathlib import Path
+import sys
+import os
 
-import aiohttp
-from aiohttp import ClientTimeout, ClientSession, TCPConnector
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import auto_aiohttp
+# استدعاء auto.py الأصلي (اللي شغال مع curl_cffi)
+import auto
+from auto import CheckStatus, CheckResult
+
 from config import SITE_FILE, SITE_LOW_FILE, SITE_MID_FILE
 
-_SITE_PATHS: dict[str, str] = {
+_SITE_PATHS = {
     "random": SITE_FILE,
-    "low":    SITE_LOW_FILE,
-    "mid":    SITE_MID_FILE,
+    "low": SITE_LOW_FILE,
+    "mid": SITE_MID_FILE,
 }
 
-def _country_flag(code: str) -> str:
-    try:
-        return "".join(chr(0x1F1E6 + ord(c) - ord('A')) for c in code.upper() if 'A' <= c <= 'Z')
-    except Exception:
-        return ""
-
-# ── Dead-site cache ───────────────────────────────────────────────────────────
-_dead_sites: dict[str, float] = {}
+_dead_sites = {}
 _dead_lock = asyncio.Lock()
 
-_PROXY_SIGNS = ("407", "CONNECT tunnel", "libcurl", "Proxy Authentication", "curl: (56)", "curl: (7)")
-
 _SITE_TTL = {
-    "returned 429":              1800,
-    "returned 403":              3600,
-    "returned 402":              300,
-    "returned 422":              300,
-    "returned 404":              86400,
-    "returned 1003":             7200,
-    "returned 1003 cloudflare":  7200,
-    "non-json (possible cf":     3600,
-    "could not extract session": 300,
-    "Step 0 failed":             90,
+    "returned 429": 1800,
+    "returned 403": 3600,
+    "returned 402": 300,
+    "returned 422": 300,
+    "returned 404": 86400,
+    "Step 0 failed": 90,
 }
 
-# ── Alive-site cache (per tier) ───────────────────────────────────────────────
-_alive_sites: dict[str, list[str]] = {}
-_alive_dirty: dict[str, bool] = {t: True for t in _SITE_PATHS}
+_alive_sites = {}
+_alive_dirty = {t: True for t in _SITE_PATHS}
 
-def _norm_range(site_range: str | None) -> str:
+def _norm_range(site_range):
     return site_range if site_range in _SITE_PATHS else "random"
 
-def _rebuild_alive(site_range: str = "random") -> None:
+def _rebuild_alive(site_range="random"):
     global _alive_sites, _alive_dirty
     tier = _norm_range(site_range)
     now = time.time()
@@ -61,7 +49,7 @@ def _rebuild_alive(site_range: str = "random") -> None:
     _alive_sites[tier] = [s for s in pool if s not in _dead_sites]
     _alive_dirty[tier] = False
 
-def _is_dead(site_url: str) -> bool:
+def _is_dead(site_url):
     exp = _dead_sites.get(site_url)
     if exp is None:
         return False
@@ -70,9 +58,9 @@ def _is_dead(site_url: str) -> bool:
     _dead_sites.pop(site_url, None)
     return False
 
-def _mark_dead(site_url: str, error_str: str) -> None:
+def _mark_dead(site_url, error_str):
     global _alive_dirty
-    if not error_str or any(s in error_str for s in _PROXY_SIGNS):
+    if not error_str:
         return
     for pattern, ttl in _SITE_TTL.items():
         if pattern in error_str.lower():
@@ -81,24 +69,16 @@ def _mark_dead(site_url: str, error_str: str) -> None:
                 _alive_dirty[t] = True
             return
 
-def dead_site_count() -> int:
-    now = time.time()
-    return sum(1 for exp in _dead_sites.values() if exp > now)
-
-# ── Site lists (random / low / mid) ─────────────────────────────────────────
-
-def _load_sites(path: str) -> list[str]:
+def _load_sites(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
         return []
 
-_sites: dict[str, list[str]] = {
-    tier: _load_sites(path) for tier, path in _SITE_PATHS.items()
-}
+_sites = {tier: _load_sites(path) for tier, path in _SITE_PATHS.items()}
 
-def _base_pool(site_range: str = "random") -> list[str]:
+def _base_pool(site_range="random"):
     tier = _norm_range(site_range)
     primary = _sites.get(tier) or []
     if primary:
@@ -107,73 +87,7 @@ def _base_pool(site_range: str = "random") -> list[str]:
         return _sites.get("random") or []
     return []
 
-def reload_sites() -> int:
-    global _sites, _alive_dirty
-    for tier, path in _SITE_PATHS.items():
-        _sites[tier] = _load_sites(path)
-        _alive_dirty[tier] = True
-    return len(_sites.get("random") or [])
-
-def site_count(site_range: str = "random") -> int:
-    return len(_base_pool(site_range))
-
-# ── Gateway response normalization ─────────────────────────────────────────────
-
-_APPROVED_KEYWORDS = (
-    "3DS_AUTHENTICATION", "3DS_AUTH", "3DS",
-    "AUTHENTICATION_REQUIRED", "ACTIONREQUIRED",
-    "INSUFFICIENT_FUNDS", "INSUFFICIENT FUNDS", "NOT SUFFICIENT FUNDS",
-    "INCORRECT_CVC", "INVALID_CVC", "SECURITY_CODE",
-    "CVV", "CVC_MISMATCH",
-)
-_DECLINED_KEYWORDS = (
-    "CARD_DECLINED", "DECLINED", "DO_NOT_HONOR", "GENERIC_ERROR",
-    "EXPIRED_CARD", "PICKUP_CARD",
-    "LOST_CARD", "STOLEN_CARD", "FRAUD", "CALL_ISSUER",
-    "TRANSACTION_NOT_ALLOWED", "PROCESSING_ERROR",
-    "PAYMENT_METHOD_NOT_AVAILABLE", "AUTHENTICATION_FAILED",
-    "INVALID_NUMBER", "INCORRECT_NUMBER",
-)
-_INFRA_ERROR_KEYWORDS = (
-    "STEP ", "FAILED:", "RETURNED 4", "RETURNED 5", "RETURNED 402",
-    "RETURNED 422", "RETURNED 429", "CURL:", "CONNECT TUNNEL",
-    "COULD NOT EXTRACT", "COULD NOT", "POLL ", "EXCEEDED 30",
-    "PROXY", "TIMEOUT", "TIMED OUT", "INVENTORYRESERVATIONFAILURE",
-    "NO SHOPIFY", "SESSION",
-)
-
-def _exc_text(exc: BaseException | None) -> str:
-    if exc is None:
-        return ""
-    if exc.args and exc.args[0]:
-        return str(exc.args[0])
-    return str(exc) or ""
-
-def normalize_result(status: str, result_str: str) -> tuple[str, str]:
-    resp = (result_str or "").strip() or "UNKNOWN"
-    up = resp.upper()
-
-    if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
-        return "charged", resp
-    if any(k in up for k in _APPROVED_KEYWORDS):
-        return "approved", resp
-
-    if status == "declined" or any(k in up for k in _DECLINED_KEYWORDS):
-        if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
-            return "declined", resp
-
-    if status in ("charged", "approved", "declined"):
-        return status, resp
-
-    if any(k in up for k in _INFRA_ERROR_KEYWORDS):
-        return "error", resp
-
-    if resp != "UNKNOWN":
-        return "declined", resp
-
-    return "error", resp
-
-def get_random_site(site_range: str = "random") -> str | None:
+def get_random_site(site_range="random"):
     tier = _norm_range(site_range)
     pool = _base_pool(tier)
     if not pool:
@@ -184,57 +98,46 @@ def get_random_site(site_range: str = "random") -> str | None:
     pick = alive if alive else pool
     return random.choice(pick)
 
-# ── Proxy helpers ─────────────────────────────────────────────────────────────
+def normalize_proxy(proxy):
+    return auto.normalize_proxy(proxy)
 
-def normalize_proxy(proxy: str) -> str:
-    return auto_aiohttp.normalize_proxy(proxy)
+_APPROVED_KEYWORDS = (
+    "3DS_AUTHENTICATION", "3DS_AUTH", "3DS",
+    "AUTHENTICATION_REQUIRED", "ACTIONREQUIRED",
+    "INSUFFICIENT_FUNDS", "INSUFFICIENT FUNDS",
+)
+_DECLINED_KEYWORDS = (
+    "CARD_DECLINED", "DECLINED", "DO_NOT_HONOR", "GENERIC_ERROR",
+    "EXPIRED_CARD", "PICKUP_CARD", "LOST_CARD", "STOLEN_CARD",
+    "FRAUD", "CALL_ISSUER", "TRANSACTION_NOT_ALLOWED",
+    "INVALID_NUMBER", "INCORRECT_NUMBER",
+)
+_INFRA_ERROR_KEYWORDS = (
+    "STEP", "FAILED", "RETURNED 4", "RETURNED 5", "RETURNED 402",
+    "RETURNED 422", "RETURNED 429", "PROXY", "TIMEOUT", "TIMED OUT",
+    "COULD NOT", "POLL", "EXCEEDED", "INVENTORYRESERVATIONFAILURE",
+)
 
-async def validate_proxy(proxy: str) -> bool:
-    try:
-        purl = normalize_proxy(proxy)
-        timeout = ClientTimeout(total=8)
-        connector = TCPConnector(limit=1)
-        async with ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.get("https://api.ipify.org?format=json", proxy=purl) as resp:
-                return resp.status == 200
-    except Exception:
-        return False
+def normalize_result(status, result_str):
+    resp = (result_str or "").strip() or "UNKNOWN"
+    up = resp.upper()
 
-async def validate_proxy_info(proxy: str) -> dict | None:
-    try:
-        purl = normalize_proxy(proxy)
-        timeout = ClientTimeout(total=10)
-        connector = TCPConnector(limit=1)
-        t0 = time.time()
-        async with ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.get("https://api.ipify.org?format=json", proxy=purl) as resp:
-                if resp.status != 200:
-                    return None
-                ms = int((time.time() - t0) * 1000)
-                data = await resp.json()
-                ip = data.get("ip", "")
-        
-        geo = {}
-        try:
-            timeout2 = ClientTimeout(total=5)
-            async with ClientSession(connector=TCPConnector(limit=1), timeout=timeout2) as session2:
-                async with session2.get(f"http://ip-api.com/json/{ip}?fields=country,countryCode,city") as gr:
-                    if gr.status == 200:
-                        geo = await gr.json()
-        except Exception:
-            pass
-        
-        return {
-            "ms": ms,
-            "ip": ip,
-            "country": geo.get("country", "Unknown"),
-            "city": geo.get("city", ""),
-            "flag": _country_flag(geo.get("countryCode", "")),
-        }
-    except Exception:
-        return None
+    if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
+        return "charged", resp
+    if any(k in up for k in _APPROVED_KEYWORDS):
+        return "approved", resp
+    if status == "declined" or any(k in up for k in _DECLINED_KEYWORDS):
+        return "declined", resp
+    if any(k in up for k in _INFRA_ERROR_KEYWORDS):
+        return "error", resp
+    return "error", resp
 
-# ── Card checker ──────────────────────────────────────────────────────────────
+def _exc_text(exc):
+    if exc is None:
+        return ""
+    if exc.args and exc.args[0]:
+        return str(exc.args[0])
+    return str(exc) or ""
 
 async def check_card(cc: str, site: str, proxy: str) -> dict:
     proxy_url = ""
@@ -244,7 +147,8 @@ async def check_card(cc: str, site: str, proxy: str) -> dict:
         pass
 
     try:
-        res = await auto_aiohttp.run_checkout_for_card(site, cc, proxy_url)
+        # استدعاء auto.py الأصلي (غير متزامن)
+        res = auto.run_checkout_for_card(site, cc, proxy_url)
     except Exception as e:
         err_msg = str(e).replace("\n", " ")[:150]
         _mark_dead(site, err_msg)
@@ -254,10 +158,10 @@ async def check_card(cc: str, site: str, proxy: str) -> dict:
         }
 
     status_map = {
-        auto_aiohttp.CheckStatus.CHARGED: "charged",
-        auto_aiohttp.CheckStatus.APPROVED: "approved",
-        auto_aiohttp.CheckStatus.DECLINED: "declined",
-        auto_aiohttp.CheckStatus.ERROR: "error",
+        CheckStatus.CHARGED: "charged",
+        CheckStatus.APPROVED: "approved",
+        CheckStatus.DECLINED: "declined",
+        CheckStatus.ERROR: "error",
     }
     status = status_map.get(res.status, "error")
 
