@@ -9,12 +9,7 @@ import datetime
 from aiohttp import web
 from aiohttp_cors import setup as setup_cors
 
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
-
-import logging
-logging.basicConfig(level=logging.CRITICAL)
-
+import checker_aiohttp as checker
 from status_page import get_status_page
 
 _stats = {
@@ -41,6 +36,7 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
         pass
 
 class VeNoMHandler(web.View):
+    
     async def get(self):
         return await self._handle()
     
@@ -73,8 +69,7 @@ class VeNoMHandler(web.View):
         t0 = time.time()
         
         try:
-            from checker_aiohttp import check_card
-            result = await check_card(cc, site, proxy or "")
+            result = await checker.check_card(cc, site, proxy or "")
         except Exception as e:
             async with _stats_lock:
                 _stats["errors"] += 1
@@ -112,14 +107,17 @@ class VeNoMHandler(web.View):
             "elapsed": elapsed,
         })
 
+
 class StatusHandler(web.View):
     async def get(self):
         async with _stats_lock:
             stats_copy = _stats.copy()
         return await get_status_page(stats_copy)
 
+
 async def health_check(request):
     return web.json_response({"ok": True})
+
 
 def create_app():
     app = web.Application()
@@ -135,7 +133,6 @@ def create_app():
     app.router.add_view("/VeNoM-xK9qPm2r", VeNoMHandler)
     app.router.add_view("/VeNoM-status", StatusHandler)
     app.router.add_get("/health", health_check)
-    app.router.add_get("/VeNoM-status", StatusHandler)
     
     for route in list(app.router.routes()):
         cors.add(route)
