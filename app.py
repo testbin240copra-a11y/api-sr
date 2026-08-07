@@ -75,21 +75,22 @@ def check():
     t0 = time.time()
     
     try:
-        # استدعاء auto مباشر (غير متزامن)
-        import auto
+        import auto_async
+        
         proxy_url = ""
         try:
-            proxy_url = auto.normalize_proxy(proxy)
+            proxy_url = auto_async.normalize_proxy(proxy)
         except:
             pass
         
-        res = auto.run_checkout_for_card(site, cc, proxy_url)
+        # تشغيل async function باستخدام asyncio.run()
+        res = asyncio.run(auto_async.run_checkout_for_card_async(site, cc, proxy_url))
         
         status_map = {
-            auto.CheckStatus.CHARGED: "charged",
-            auto.CheckStatus.APPROVED: "approved",
-            auto.CheckStatus.DECLINED: "declined",
-            auto.CheckStatus.ERROR: "error",
+            auto_async.CheckStatus.CHARGED: "charged",
+            auto_async.CheckStatus.APPROVED: "approved",
+            auto_async.CheckStatus.DECLINED: "declined",
+            auto_async.CheckStatus.ERROR: "error",
         }
         
         status = status_map.get(res.status, "error")
