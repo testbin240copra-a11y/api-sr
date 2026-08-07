@@ -7,12 +7,17 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 if __name__ == "__main__":
-    import asyncio
-    from aiohttp import web
+    import uvicorn
     
-    import aiohttp_app
+    port = int(os.environ.get("PORT", 6767))
+    print(f"Starting VeNoM Checker API on port {port}...")
+    print(f"Endpoint: /VeNoM-xK9qPm2r")
+    print(f"Status  : /VeNoM-status")
     
-    port = int(os.environ.get("PORT", 6667))
-    
-    app = aiohttp_app.create_app()
-    web.run_app(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        "checker_api2:app",
+        host="0.0.0.0",
+        port=port,
+        access_log=False,
+        log_level="critical",
+    )
