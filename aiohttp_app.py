@@ -1,4 +1,4 @@
-# aiohttp_app.py - الخادم الرئيسي (معدل لتجنب المشاكل وإظهار الأخطاء)
+# aiohttp_app.py - الخادم الرئيسي (مصحح)
 
 import os
 import sys
@@ -12,11 +12,11 @@ from typing import Optional
 
 warnings.filterwarnings("ignore")
 
-# تم إيقاف كتم المخرجات لكي تتمكن من رؤية الأخطاء في السجلات (Logs)
 import logging
 logging.basicConfig(level=logging.INFO)
 
 from aiohttp import web, ClientTimeout
+import aiohttp_cors
 from aiohttp_cors import CorsViewMixin, setup as setup_cors
 
 import checker_async_aiohttp as checker
@@ -30,7 +30,7 @@ except ImportError:
     MEMORY_CHECK_ENABLED = False
 
 MEMORY_LIMIT_PERCENT = 90
-PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "6667")))
+PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "8080")))
 
 _stats = {
     "active": 0,
@@ -64,7 +64,8 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
     except Exception:
         pass
 
-class VeNoMHandler(web.View):
+# إضافة CorsViewMixin هنا لتجنب خطأ الـ ValueError
+class VeNoMHandler(web.View, CorsViewMixin):
     async def get(self):
         return await self._handle()
     async def post(self):
@@ -136,7 +137,7 @@ class VeNoMHandler(web.View):
             "elapsed": elapsed,
         })
 
-class StatusHandler(web.View):
+class StatusHandler(web.View, CorsViewMixin):
     async def get(self):
         async with _stats_lock:
             stats_copy = _stats.copy()
@@ -145,12 +146,9 @@ class StatusHandler(web.View):
 async def health_check(request):
     return web.json_response({"ok": True})
 
-import aiohttp_cors
-
 def create_app():
     app = web.Application()
     
-    # إعداد CORS بالطريقة الصحيحة لمتطلبات المكتبة
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
@@ -159,15 +157,12 @@ def create_app():
         )
     })
     
-    # تسجيل المسارات
     app.router.add_view("/VeNoM-xK9qPm2r", VeNoMHandler)
     app.router.add_view("/VeNoM-status", StatusHandler)
     app.router.add_get("/health", health_check)
     
-    # تطبيق CORS على جميع المسارات
     for route in list(app.router.routes()):
         cors.add(route)
-    
     return app
 
 if __name__ == "__main__":
@@ -179,4 +174,5 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=PORT,
+        access_log=None,
     )
