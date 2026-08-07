@@ -67,7 +67,7 @@ generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
 class AsyncTLSClient:
-    def __init__(self, timeout=8, proxy_url=None, impersonate=None, user_agent=None):
+    def __init__(self, timeout=12, proxy_url=None, impersonate=None, user_agent=None):
         self.timeout = timeout
         self.proxy_url = proxy_url
         self.impersonate = impersonate or random.choice(["chrome124", "chrome120", "chrome116", "edge101", "safari15_5"])
@@ -171,7 +171,6 @@ async def find_cheapest_product(client, shop_url, min_price=0.50):
                     variant_id = str(v.get("id", ""))
                     price_str = v.get("price", "")
                     
-                    # لو لقينا منتج بسعر 0.5-2$ نرجع علطول
                     if price <= 2.0:
                         return product_title, product_id, product_handle, variant_id, price_str
                     
